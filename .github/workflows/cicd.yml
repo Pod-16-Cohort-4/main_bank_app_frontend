@@ -1,77 +1,89 @@
-
 name: Bank Frontend Pipeline
 
 on:
   push:
     branches:
       - main
-  # pull_request:
-  #   branches:
-  #     - cicd
 
 jobs:
   Continues-Integration_build_and_push:
     runs-on: ubuntu-latest
 
     steps:
+    # Step 1: Checkout the frontend code
     - name: Checkout repository
       uses: actions/checkout@v3
       with:
         repository: Pod-16-Cohort-4/main_bank_app_frontend
         ref: main
 
-
-    - name: Log in to awscli
+    # Step 2: Configure AWS credentials
+    - name: Configure AWS CLI credentials
       uses: aws-actions/configure-aws-credentials@v3
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: eu-north-1
 
-
+    # Step 3: Build Docker image
     - name: Build container image
       run: docker build -t bank-app-frontend:latest .
 
-    - name: Log in to ECR with short-lived credentials
+    # Step 4: Log in to Amazon ECR (correct registry URL)
+    - name: Log in to Amazon ECR
+      env:
+        AWS_REGION: eu-north-1
       run: |
-        aws ecr get-login-password --region eu-north-1 | docker login --username AWS --password-stdin ${{ vars.ECR_REPO }}
-  
+        aws ecr get-login-password --region $AWS_REGION | \
+        docker login --username AWS --password-stdin \
+        917547345151.dkr.ecr.$AWS_REGION.amazonaws.com
+
+    # Step 5: Tag Docker image for ECR
     - name: Tag Docker image
-      run: docker tag bank-app-frontend:latest ${{ vars.ECR_REPO }}/bank-frontend:${{ github.run_number }}
-    
+      run: |
+        docker tag bank-app-frontend:latest \
+        917547345151.dkr.ecr.eu-north-1.amazonaws.com/bank-frontend:${{ github.run_number }}
+
+    # Step 6: Push Docker image to ECR
     - name: Push image to ECR
-      run: docker push ${{ vars.ECR_REPO }}/bank-frontend:${{ github.run_number }}
+      run: |
+        docker push \
+        917547345151.dkr.ecr.eu-north-1.amazonaws.com/bank-frontend:${{ github.run_number }}
 
-
+    # Step 7: Clean up Docker images locally
     - name: Clean up Docker image locally
       run: |
-        docker rmi bank-app-frontend:latest
-        docker rmi ${{ vars.ECR_REPO }}/bank-frontend:${{ github.run_number }}
+        docker rmi bank-app-frontend:latest || true
+        docker rmi 917547345151.dkr.ecr.eu-north-1.amazonaws.com/bank-frontend:${{ github.run_number }} || true
 
-    - name: Clean up GitHub repo on runner
+    # Step 8: Clean up workspace
+    - name: Clean up GitHub runner workspace
       run: rm -rf ./*
 
-
-  
   Continues-Update_k8s_manifest:
     runs-on: ubuntu-latest
     needs: Continues-Integration_build_and_push
+
     steps:
-    - name: Checkout repository.
+    # Step 9: Clone and update Kubernetes manifest repository
+    - name: Checkout Kubernetes manifest repository
       env:
-          GIT_USERNAME: ${{ secrets.GIT_USERNAME }}
-          GIT_PASSWORD: ${{ secrets.GIT_PASSWORD }}
+        GIT_USERNAME: ${{ secrets.GIT_USERNAME }}
+        GIT_PASSWORD: ${{ secrets.GIT_PASSWORD }}
       run: |
-         git clone https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/Pod-16-Cohort-4/kubernetes-manifest.git
-         
-         cd kubernetes-manifest
-         git config --global user.email "pod16.cohort4@gmail.com"
-         git config --global user.name "pod16_cohort4"
+        git clone https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/Pod-16-Cohort-4/kubernetes-manifest.git
 
-         sed -i "s+${{ vars.ECR_REPO }}/bank-frontend:.*+${{ vars.ECR_REPO }}/bank-frontend:${{ github.run_number }}+g" ./bank-project/frontend.yaml
+        cd kubernetes-manifest
+        git config --global user.email "pod16.cohort4@gmail.com"
+        git config --global user.name "pod16_cohort4"
 
-         cat ./bank-project/frontend.yaml | grep -q "${{ vars.ECR_REPO }}/bank-frontend:${{ github.run_number }}"
+        # Update the image tag in frontend.yaml
+        sed -i "s+917547345151.dkr.ecr.eu-north-1.amazonaws.com/bank-frontend:.*+917547345151.dkr.ecr.eu-north-1.amazonaws.com/bank-frontend:${{ github.run_number }}+g" ./bank-project/frontend.yaml
 
-         git add bank-project/frontend.yaml
-         git commit -m "Update frontend image to version ${{ github.run_number }}"
-         git push origin main
+        # Confirm the tag was updated
+        cat ./bank-project/frontend.yaml | grep -q "917547345151.dkr.ecr.eu-north-1.amazonaws.com/bank-frontend:${{ github.run_number }}"
+
+        # Commit and push updated manifest
+        git add bank-project/frontend.yaml
+        git commit -m "Update frontend image to version ${{ github.run_number }}"
+        git push origin main
